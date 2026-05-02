@@ -57,6 +57,19 @@
   .source a:hover { text-decoration: underline; }
   .maplibregl-control-container { display: none; }
 
+  /* Augmentation: opt-in breakdown by victim type. Pills and stat panel
+     are hidden until the user expands the section. Sensitive content
+     (children killed) stays out of view by default. */
+  .aug-toggle { background: transparent; border: 0; color: var(--fg-muted); font-size: 11px; cursor: pointer; padding: 4px 8px; border-radius: 4px; font-family: inherit; }
+  .aug-toggle:hover { color: var(--fg); background: var(--bg-elev); }
+  .pill.aug-only { display: none; }
+  header.augmented .pill.aug-only { display: inline-flex; align-items: center; }
+  header.augmented .aug-toggle::before { content: '▾ '; }
+  header.augmented .aug-toggle::after { content: ''; }
+  header:not(.augmented) .aug-toggle::before { content: '▸ '; }
+  .toll-breakdown { display: none; font-size: 10px; color: var(--fg-muted); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--bg-elev); font-variant-numeric: tabular-nums; line-height: 1.5; text-align: right; }
+  header.augmented ~ #map .toll-breakdown { display: block; }
+
   /* Mobile layout. Touch-aware breakpoint catches Galaxy Z-Fold and similar
      touch devices that report a desktop-width viewport. Desktop is untouched. */
   @media (max-width: 768px), (max-width: 1100px) and (pointer: coarse) {
@@ -76,6 +89,9 @@
     .toll .label, .toll .since { display: none; }
     .toll.expanded .label, .toll.expanded .since { display: block; }
     .toll.expanded { padding: 10px 12px; }
+    /* On mobile, breakdown stat panel only appears when toll is tap-expanded. */
+    header.augmented ~ #map .toll-breakdown { display: none; }
+    header.augmented ~ #map .toll.expanded .toll-breakdown { display: block; }
 
     .legend { display: none; }
 
@@ -110,7 +126,13 @@
           <button class="pill" data-filter="alcohol">alcohol</button>
           <button class="pill" data-filter="multi">multi-fatal</button>
           <button class="pill" data-filter="night">night</button>
+          <button class="pill aug-only" data-filter="pedestrian">pedestrian</button>
+          <button class="pill aug-only" data-filter="cyclist">cyclist</button>
+          <button class="pill aug-only" data-filter="child">child &lt;18</button>
         </div>
+      </div>
+      <div class="ctrl aug-toggle-ctrl">
+        <button id="aug-toggle" class="aug-toggle" aria-expanded="false">▸ breakdown by victim type</button>
       </div>
       <div class="ctrl">
         <span class="stat-pill" id="visible-count">0 visible</span>
@@ -130,6 +152,7 @@
       <div class="num" id="toll-num">0</div>
       <div class="label" id="toll-label">cumulative fatalities</div>
       <div class="since" id="toll-since">since 2000-01-01</div>
+      <div class="toll-breakdown" id="toll-breakdown"></div>
     </div>
   </div>
   <div id="scrubber"></div>
@@ -4788,9 +4811,45 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
     if (MOBILE_MQ.matches) tollEl.classList.toggle('expanded');
   });
 
+  // Augmentation toggle: opt in to the victim-type breakdown (extra filter pills + stat panel).
+  // Sensitive content (children-killed counts) stays hidden until the user expands.
+  const augBtn = document.getElementById('aug-toggle');
+  augBtn.addEventListener('click', () => {
+    const open = headerEl.classList.toggle('augmented');
+    augBtn.setAttribute('aria-expanded', String(open));
+    augBtn.textContent = (open ? '▾' : '▸') + ' breakdown by victim type';
+    // If the user closes the augmentation while a victim-type filter is active,
+    // clear those filters so the visualisation doesn't keep them silently applied.
+    if (!open) {
+      let touched = false;
+      for (const k of ['pedestrian', 'cyclist', 'child']) {
+        if (activeFilters.delete(k)) touched = true;
+      }
+      if (touched) {
+        syncFilterPills();
+        link.set('filter', activeFilters.size === 0 ? '' : [...activeFilters].join(','));
+        rebuildPrefix();
+        refresh();
+      }
+    }
+  });
+  // If a permalink hash arrives with pedestrian/cyclist/child already active, auto-expand.
+  if (['pedestrian', 'cyclist', 'child'].some(k => activeFilters.has(k))) {
+    headerEl.classList.add('augmented');
+    augBtn.setAttribute('aria-expanded', 'true');
+    augBtn.textContent = '▾ breakdown by victim type';
+  }
+
   const resp = await fetch('fars.json');
   const payload = await resp.json();
-  const all = payload.data.map(([t, lon, lat, f, a, l]) => ({ t, lon, lat, f, a, l }));
+  // Backward-compat: older payloads have only [t,lon,lat,f,a,l]; new payloads add
+  // [ped,cyc,drv,pas,c15,c18]. Defaulting missing trailing fields to 0 keeps
+  // the dashboard runnable against either shape.
+  const all = payload.data.map(r => ({
+    t: r[0], lon: r[1], lat: r[2], f: r[3], a: r[4], l: r[5],
+    ped: r[6] || 0, cyc: r[7] || 0, drv: r[8] || 0, pas: r[9] || 0,
+    c15: r[10] || 0, c18: r[11] || 0,
+  }));
   console.log('loaded', all.length, 'crashes');
 
   const T_MIN = 978271260000 / 1000;
@@ -4799,7 +4858,7 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
 
   const initial = link.read();
   let mode = (initial.mode === 'heatmap') ? 'heatmap' : 'replay';
-  const VALID_FILTER_KEYS = ['alcohol', 'multi', 'night'];
+  const VALID_FILTER_KEYS = ['alcohol', 'multi', 'night', 'pedestrian', 'cyclist', 'child'];
   // Empty set = "all" (no filters active). Filters AND together.
   const activeFilters = new Set(
     (initial.filter || '').split(',').filter(f => VALID_FILTER_KEYS.includes(f))
@@ -4808,9 +4867,12 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
 
   function passFilter(c) {
     if (activeFilters.size === 0) return true;
-    if (activeFilters.has('alcohol') && c.a !== 1) return false;
-    if (activeFilters.has('multi')   && c.f < 2)   return false;
-    if (activeFilters.has('night')   && !(c.l === 2 || c.l === 3 || c.l === 6)) return false;
+    if (activeFilters.has('alcohol')    && c.a !== 1) return false;
+    if (activeFilters.has('multi')      && c.f < 2)   return false;
+    if (activeFilters.has('night')      && !(c.l === 2 || c.l === 3 || c.l === 6)) return false;
+    if (activeFilters.has('pedestrian') && (c.ped || 0) < 1) return false;
+    if (activeFilters.has('cyclist')    && (c.cyc || 0) < 1) return false;
+    if (activeFilters.has('child')      && (c.c18 || 0) < 1) return false;
     return true;
   }
 
@@ -4818,43 +4880,66 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
   // Pre-compute prefix sums of fatalities respecting the current filter so
   // the toll can be looked up in O(log n) per scrubber tick. Recompute when
   // the filter changes.
-  let prefixT = null;     // sorted unix-sec timestamps of crashes that pass filter
-  let prefixCum = null;   // cumulative fatalities array, parallel to prefixT
+  // Per-victim-type prefix sums so the breakdown panel is also O(log n) per tick.
+  let prefixT = null;
+  const prefixSums = { f: null, drv: null, pas: null, ped: null, cyc: null, c15: null, c18: null };
   function rebuildPrefix() {
     const filtered = all.filter(passFilter);   // already sorted by time
-    prefixT = new Float64Array(filtered.length);
-    prefixCum = new Int32Array(filtered.length);
-    let acc = 0;
-    for (let i = 0; i < filtered.length; i++) {
-      acc += filtered[i].f;
-      prefixT[i] = filtered[i].t / 1000;
-      prefixCum[i] = acc;
+    const N = filtered.length;
+    prefixT = new Float64Array(N);
+    for (const k of Object.keys(prefixSums)) prefixSums[k] = new Int32Array(N);
+    const acc = { f: 0, drv: 0, pas: 0, ped: 0, cyc: 0, c15: 0, c18: 0 };
+    for (let i = 0; i < N; i++) {
+      const c = filtered[i];
+      acc.f += c.f; acc.drv += c.drv; acc.pas += c.pas;
+      acc.ped += c.ped; acc.cyc += c.cyc;
+      acc.c15 += c.c15; acc.c18 += c.c18;
+      prefixT[i] = c.t / 1000;
+      for (const k of Object.keys(prefixSums)) prefixSums[k][i] = acc[k];
     }
   }
-  function deathsByTime(t) {
-    if (!prefixT || !prefixT.length) return 0;
-    // binary search for the largest index where prefixT[i] <= t
+  function indexAtTime(t) {
+    if (!prefixT || !prefixT.length) return -1;
     let lo = 0, hi = prefixT.length - 1, ans = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       if (prefixT[mid] <= t) { ans = mid; lo = mid + 1; }
       else hi = mid - 1;
     }
-    return ans < 0 ? 0 : prefixCum[ans];
+    return ans;
   }
-  // Order matches reading flow: "alcohol-related multi-fatal night fatalities".
-  const FILTER_PHRASES = { alcohol: 'alcohol-related', multi: 'multi-fatal', night: 'night' };
+  function deathsByTime(t) {
+    const i = indexAtTime(t);
+    return i < 0 ? 0 : prefixSums.f[i];
+  }
+  // Phrase order matches reading flow: "alcohol-related multi-fatal night pedestrian cyclist child fatalities".
+  const FILTER_PHRASES = {
+    alcohol: 'alcohol-related', multi: 'multi-fatal', night: 'night',
+    pedestrian: 'pedestrian', cyclist: 'cyclist', child: 'child (<18)',
+  };
   function buildTollLabel() {
     if (activeFilters.size === 0) return 'cumulative fatalities';
     const parts = VALID_FILTER_KEYS.filter(k => activeFilters.has(k)).map(k => FILTER_PHRASES[k]);
     return `cumulative ${parts.join(' ')} fatalities`;
   }
   function updateToll() {
-    const n = deathsByTime(currentT);
+    const i = indexAtTime(currentT);
+    const n = i < 0 ? 0 : prefixSums.f[i];
     document.getElementById('toll-num').textContent = n.toLocaleString();
     document.getElementById('toll-label').textContent = buildTollLabel();
     const dt = new Date(currentT * 1000).toISOString().slice(0, 10);
     document.getElementById('toll-since').textContent = `since 2000-01-01 → ${dt}`;
+    // Stat panel — visible only when augmentation expanded (CSS-gated).
+    const bd = document.getElementById('toll-breakdown');
+    if (i < 0) { bd.textContent = ''; return; }
+    const fmt = v => v.toLocaleString();
+    bd.innerHTML =
+      `drivers: <b>${fmt(prefixSums.drv[i])}</b> · ` +
+      `passengers: <b>${fmt(prefixSums.pas[i])}</b><br>` +
+      `pedestrians: <b>${fmt(prefixSums.ped[i])}</b> · ` +
+      `cyclists: <b>${fmt(prefixSums.cyc[i])}</b><br>` +
+      `children &lt;15: <b>${fmt(prefixSums.c15[i])}</b> · ` +
+      `&lt;18: <b>${fmt(prefixSums.c18[i])}</b>`;
   }
   rebuildPrefix();
 
