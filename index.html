@@ -128,7 +128,7 @@
           <button class="pill" data-filter="night">night</button>
           <button class="pill aug-only" data-filter="pedestrian">pedestrian</button>
           <button class="pill aug-only" data-filter="cyclist">cyclist</button>
-          <button class="pill aug-only" data-filter="child">child &lt;18</button>
+          <button class="pill aug-only" data-filter="child">child</button>
         </div>
       </div>
       <div class="ctrl aug-toggle-ctrl">
@@ -4842,13 +4842,11 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
 
   const resp = await fetch('fars.json');
   const payload = await resp.json();
-  // Backward-compat: older payloads have only [t,lon,lat,f,a,l]; new payloads add
-  // [ped,cyc,drv,pas,c15,c18]. Defaulting missing trailing fields to 0 keeps
-  // the dashboard runnable against either shape.
+  // Payload shape: [t, lon, lat, fatals, alc, light, ped, cyc, child].
+  // Older 6-field payloads still load (trailing fields default to 0).
   const all = payload.data.map(r => ({
     t: r[0], lon: r[1], lat: r[2], f: r[3], a: r[4], l: r[5],
-    ped: r[6] || 0, cyc: r[7] || 0, drv: r[8] || 0, pas: r[9] || 0,
-    c15: r[10] || 0, c18: r[11] || 0,
+    ped: r[6] || 0, cyc: r[7] || 0, child: r[8] || 0,
   }));
   console.log('loaded', all.length, 'crashes');
 
@@ -4872,7 +4870,7 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
     if (activeFilters.has('night')      && !(c.l === 2 || c.l === 3 || c.l === 6)) return false;
     if (activeFilters.has('pedestrian') && (c.ped || 0) < 1) return false;
     if (activeFilters.has('cyclist')    && (c.cyc || 0) < 1) return false;
-    if (activeFilters.has('child')      && (c.c18 || 0) < 1) return false;
+    if (activeFilters.has('child')      && (c.child || 0) < 1) return false;
     return true;
   }
 
@@ -4880,20 +4878,18 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
   // Pre-compute prefix sums of fatalities respecting the current filter so
   // the toll can be looked up in O(log n) per scrubber tick. Recompute when
   // the filter changes.
-  // Per-victim-type prefix sums so the breakdown panel is also O(log n) per tick.
+  // Per-category prefix sums so the breakdown panel is also O(log n) per tick.
   let prefixT = null;
-  const prefixSums = { f: null, drv: null, pas: null, ped: null, cyc: null, c15: null, c18: null };
+  const prefixSums = { f: null, ped: null, cyc: null, child: null };
   function rebuildPrefix() {
     const filtered = all.filter(passFilter);   // already sorted by time
     const N = filtered.length;
     prefixT = new Float64Array(N);
     for (const k of Object.keys(prefixSums)) prefixSums[k] = new Int32Array(N);
-    const acc = { f: 0, drv: 0, pas: 0, ped: 0, cyc: 0, c15: 0, c18: 0 };
+    const acc = { f: 0, ped: 0, cyc: 0, child: 0 };
     for (let i = 0; i < N; i++) {
       const c = filtered[i];
-      acc.f += c.f; acc.drv += c.drv; acc.pas += c.pas;
-      acc.ped += c.ped; acc.cyc += c.cyc;
-      acc.c15 += c.c15; acc.c18 += c.c18;
+      acc.f += c.f; acc.ped += c.ped; acc.cyc += c.cyc; acc.child += c.child;
       prefixT[i] = c.t / 1000;
       for (const k of Object.keys(prefixSums)) prefixSums[k][i] = acc[k];
     }
@@ -4913,9 +4909,10 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
     return i < 0 ? 0 : prefixSums.f[i];
   }
   // Phrase order matches reading flow: "alcohol-related multi-fatal night pedestrian cyclist child fatalities".
+  // child = under-18 (the cutoff is also signposted in the stat panel).
   const FILTER_PHRASES = {
     alcohol: 'alcohol-related', multi: 'multi-fatal', night: 'night',
-    pedestrian: 'pedestrian', cyclist: 'cyclist', child: 'child (<18)',
+    pedestrian: 'pedestrian', cyclist: 'cyclist', child: 'child',
   };
   function buildTollLabel() {
     if (activeFilters.size === 0) return 'cumulative fatalities';
@@ -4934,12 +4931,9 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
     if (i < 0) { bd.textContent = ''; return; }
     const fmt = v => v.toLocaleString();
     bd.innerHTML =
-      `drivers: <b>${fmt(prefixSums.drv[i])}</b> · ` +
-      `passengers: <b>${fmt(prefixSums.pas[i])}</b><br>` +
-      `pedestrians: <b>${fmt(prefixSums.ped[i])}</b> · ` +
+      `pedestrians: <b>${fmt(prefixSums.ped[i])}</b><br>` +
       `cyclists: <b>${fmt(prefixSums.cyc[i])}</b><br>` +
-      `children &lt;15: <b>${fmt(prefixSums.c15[i])}</b> · ` +
-      `&lt;18: <b>${fmt(prefixSums.c18[i])}</b>`;
+      `children (&lt;18): <b>${fmt(prefixSums.child[i])}</b>`;
   }
   rebuildPrefix();
 
