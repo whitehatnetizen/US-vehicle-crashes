@@ -62,8 +62,8 @@
      (children killed) stays out of view by default. */
   .aug-toggle { background: transparent; border: 0; color: var(--fg-muted); font-size: 11px; cursor: pointer; padding: 4px 8px; border-radius: 4px; font-family: inherit; }
   .aug-toggle:hover { color: var(--fg); background: var(--bg-elev); }
-  .pill.aug-only { display: none; }
-  header.augmented .pill.aug-only { display: inline-flex; align-items: center; }
+  .ctrl.aug-only { display: none; }
+  header.augmented .ctrl.aug-only { display: flex; }
   header.augmented .aug-toggle::before { content: '▾ '; }
   header.augmented .aug-toggle::after { content: ''; }
   header:not(.augmented) .aug-toggle::before { content: '▸ '; }
@@ -120,19 +120,31 @@
         </div>
       </div>
       <div class="ctrl">
-        <span>filter</span>
+        <span>crash</span>
         <div class="pill-group" id="filter-pills">
           <button class="pill active" data-filter="all">all</button>
           <button class="pill" data-filter="alcohol">alcohol</button>
-          <button class="pill" data-filter="multi">multi-fatal</button>
           <button class="pill" data-filter="night">night</button>
-          <button class="pill aug-only" data-filter="pedestrian">pedestrian</button>
-          <button class="pill aug-only" data-filter="cyclist">cyclist</button>
-          <button class="pill aug-only" data-filter="child">child</button>
         </div>
       </div>
       <div class="ctrl aug-toggle-ctrl">
         <button id="aug-toggle" class="aug-toggle" aria-expanded="false">▸ breakdown by victim type</button>
+      </div>
+      <div class="ctrl aug-only">
+        <span>victim</span>
+        <div class="pill-group" id="victim-pills">
+          <button class="pill active" data-victim="all">all</button>
+          <button class="pill" data-victim="occupant">occupants</button>
+          <button class="pill" data-victim="ped">pedestrians</button>
+          <button class="pill" data-victim="cyc">cyclists</button>
+        </div>
+      </div>
+      <div class="ctrl aug-only">
+        <span>age</span>
+        <div class="pill-group" id="age-pills">
+          <button class="pill active" data-age="all">all ages</button>
+          <button class="pill" data-age="child">children (&lt;18)</button>
+        </div>
       </div>
       <div class="ctrl">
         <span class="stat-pill" id="visible-count">0 visible</span>
@@ -4782,21 +4794,26 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   GIS.theme.init('fars', 'light');
   const tt = GIS.tooltip.create();
-  const link = GIS.permalink.init(['mode', 'filter']);
+  const link = GIS.permalink.init(['mode', 'filter', 'victim', 'age']);
 
-  // Time bounds and filter-state parsing — must happen before the aug-toggle handler
-  // is wired up, because that handler's auto-expand check inspects activeFilters.
-  // (Keeping them as `const` here means they're in the temporal dead zone otherwise.)
+  // Filter state has three independent dimensions:
+  //   crash:  attributes of the crash itself (alcohol/night) — Set, AND-combinable.
+  //   victim: who died (all/occupant/ped/cyc) — radio, single-value.
+  //   age:    age of the relevant victim category (all/child) — radio, single-value.
+  // Defined here so the aug-toggle handler can inspect them at startup.
   const T_MIN = 978271260000 / 1000;
   const T_MAX = 1735652940000 / 1000;
   const REPLAY_WINDOW_SEC = 60 * 60 * 24 * 30;   // 30 day trail
   const initialState = link.read();
   let mode = (initialState.mode === 'heatmap') ? 'heatmap' : 'replay';
-  const VALID_FILTER_KEYS = ['alcohol', 'multi', 'night', 'pedestrian', 'cyclist', 'child'];
-  // Empty set = "all" (no filters active). Filters AND together.
-  const activeFilters = new Set(
-    (initialState.filter || '').split(',').filter(f => VALID_FILTER_KEYS.includes(f))
+  const VALID_CRASH_FILTERS = ['alcohol', 'night'];
+  const VALID_VICTIMS = ['all', 'occupant', 'ped', 'cyc'];
+  const VALID_AGES = ['all', 'child'];
+  const crashFilters = new Set(
+    (initialState.filter || '').split(',').filter(f => VALID_CRASH_FILTERS.includes(f))
   );
+  let victim = VALID_VICTIMS.includes(initialState.victim) ? initialState.victim : 'all';
+  let age = VALID_AGES.includes(initialState.age) ? initialState.age : 'all';
   let currentT = T_MAX;
 
   // Touch-aware mobile detection. Mirrors the CSS breakpoint exactly so JS and CSS agree.
@@ -4826,30 +4843,27 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
     if (MOBILE_MQ.matches) tollEl.classList.toggle('expanded');
   });
 
-  // Augmentation toggle: opt in to the victim-type breakdown (extra filter pills + stat panel).
+  // Augmentation toggle: opt in to the victim-type breakdown (radio rows + stat panel).
   // Sensitive content (children-killed counts) stays hidden until the user expands.
   const augBtn = document.getElementById('aug-toggle');
   augBtn.addEventListener('click', () => {
     const open = headerEl.classList.toggle('augmented');
     augBtn.setAttribute('aria-expanded', String(open));
     augBtn.textContent = (open ? '▾' : '▸') + ' breakdown by victim type';
-    // If the user closes the augmentation while a victim-type filter is active,
-    // clear those filters so the visualisation doesn't keep them silently applied.
-    if (!open) {
-      let touched = false;
-      for (const k of ['pedestrian', 'cyclist', 'child']) {
-        if (activeFilters.delete(k)) touched = true;
-      }
-      if (touched) {
-        syncFilterPills();
-        link.set('filter', activeFilters.size === 0 ? '' : [...activeFilters].join(','));
-        rebuildPrefix();
-        refresh();
-      }
+    // Closing the augmentation resets victim+age to 'all' so a hidden filter
+    // doesn't keep silently affecting the map.
+    if (!open && (victim !== 'all' || age !== 'all')) {
+      victim = 'all'; age = 'all';
+      syncRadioPills('victim-pills', 'victim', victim);
+      syncRadioPills('age-pills', 'age', age);
+      link.set('victim', '');
+      link.set('age', '');
+      rebuildPrefix();
+      refresh();
     }
   });
-  // If a permalink hash arrives with pedestrian/cyclist/child already active, auto-expand.
-  if (['pedestrian', 'cyclist', 'child'].some(k => activeFilters.has(k))) {
+  // If a permalink hash arrives with victim or age already non-default, auto-expand.
+  if (victim !== 'all' || age !== 'all') {
     headerEl.classList.add('augmented');
     augBtn.setAttribute('aria-expanded', 'true');
     augBtn.textContent = '▾ breakdown by victim type';
@@ -4884,22 +4898,33 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
 
   const resp = await fetch('fars.json');
   const payload = await resp.json();
-  // Payload shape: [t, lon, lat, fatals, alc, light, ped, cyc, child].
-  // Older 6-field payloads still load (trailing fields default to 0).
+  // Payload shape: [t, lon, lat, f, alc, light, ped, ped_c, cyc, cyc_c, occ, occ_c].
+  // 12 fields per record; missing trailing fields default to 0 for old payloads.
   const all = payload.data.map(r => ({
     t: r[0], lon: r[1], lat: r[2], f: r[3], a: r[4], l: r[5],
-    ped: r[6] || 0, cyc: r[7] || 0, child: r[8] || 0,
+    ped: r[6] || 0, ped_c: r[7] || 0,
+    cyc: r[8] || 0, cyc_c: r[9] || 0,
+    occ: r[10] || 0, occ_c: r[11] || 0,
   }));
   console.log('loaded', all.length, 'crashes');
 
+  // Returns the count of fatalities in this crash that fall in the (victim, age) cell.
+  // For victim='all' age='child' there's a tiny undercount (~0.7% — the 'other' PER_TYP
+  // residual that we don't ship as a separate field). Acceptable for the secondary view.
+  function cellCount(c) {
+    if (victim === 'ped') return age === 'child' ? c.ped_c : c.ped;
+    if (victim === 'cyc') return age === 'child' ? c.cyc_c : c.cyc;
+    if (victim === 'occupant') return age === 'child' ? c.occ_c : c.occ;
+    // victim === 'all'
+    return age === 'child' ? (c.ped_c + c.cyc_c + c.occ_c) : c.f;
+  }
+
   function passFilter(c) {
-    if (activeFilters.size === 0) return true;
-    if (activeFilters.has('alcohol')    && c.a !== 1) return false;
-    if (activeFilters.has('multi')      && c.f < 2)   return false;
-    if (activeFilters.has('night')      && !(c.l === 2 || c.l === 3 || c.l === 6)) return false;
-    if (activeFilters.has('pedestrian') && (c.ped || 0) < 1) return false;
-    if (activeFilters.has('cyclist')    && (c.cyc || 0) < 1) return false;
-    if (activeFilters.has('child')      && (c.child || 0) < 1) return false;
+    // Crash-attribute AND-set
+    if (crashFilters.has('alcohol') && c.a !== 1) return false;
+    if (crashFilters.has('night')   && !(c.l === 2 || c.l === 3 || c.l === 6)) return false;
+    // Victim+age cell — keep only crashes that actually have a death in the active cell
+    if (cellCount(c) < 1) return false;
     return true;
   }
 
@@ -4907,18 +4932,26 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
   // Pre-compute prefix sums of fatalities respecting the current filter so
   // the toll can be looked up in O(log n) per scrubber tick. Recompute when
   // the filter changes.
-  // Per-category prefix sums so the breakdown panel is also O(log n) per tick.
+  // Prefix sums for the toll counter (active cell) plus the breakdown-panel cells.
+  // Rebuilt whenever any of the three filter dimensions changes.
   let prefixT = null;
-  const prefixSums = { f: null, ped: null, cyc: null, child: null };
+  const prefixSums = {
+    sel: null,                                              // toll (active cell)
+    ped: null, ped_c: null, cyc: null, cyc_c: null,
+    occ: null, occ_c: null,                                  // 6-cell stat panel
+  };
   function rebuildPrefix() {
     const filtered = all.filter(passFilter);   // already sorted by time
     const N = filtered.length;
     prefixT = new Float64Array(N);
     for (const k of Object.keys(prefixSums)) prefixSums[k] = new Int32Array(N);
-    const acc = { f: 0, ped: 0, cyc: 0, child: 0 };
+    const acc = { sel: 0, ped: 0, ped_c: 0, cyc: 0, cyc_c: 0, occ: 0, occ_c: 0 };
     for (let i = 0; i < N; i++) {
       const c = filtered[i];
-      acc.f += c.f; acc.ped += c.ped; acc.cyc += c.cyc; acc.child += c.child;
+      acc.sel  += cellCount(c);
+      acc.ped  += c.ped;   acc.ped_c += c.ped_c;
+      acc.cyc  += c.cyc;   acc.cyc_c += c.cyc_c;
+      acc.occ  += c.occ;   acc.occ_c += c.occ_c;
       prefixT[i] = c.t / 1000;
       for (const k of Object.keys(prefixSums)) prefixSums[k][i] = acc[k];
     }
@@ -4935,34 +4968,39 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
   }
   function deathsByTime(t) {
     const i = indexAtTime(t);
-    return i < 0 ? 0 : prefixSums.f[i];
+    return i < 0 ? 0 : prefixSums.sel[i];
   }
-  // Phrase order matches reading flow: "alcohol-related multi-fatal night pedestrian cyclist child fatalities".
-  // child = under-18 (the cutoff is also signposted in the stat panel).
-  const FILTER_PHRASES = {
-    alcohol: 'alcohol-related', multi: 'multi-fatal', night: 'night',
-    pedestrian: 'pedestrian', cyclist: 'cyclist', child: 'child',
+  const CRASH_PHRASES = { alcohol: 'alcohol-related', night: 'night' };
+  const VICTIM_NOUNS = {
+    all:      { all: 'fatalities',  child: 'child fatalities' },
+    occupant: { all: 'occupant fatalities', child: 'child occupant fatalities' },
+    ped:      { all: 'pedestrian fatalities', child: 'child pedestrian fatalities' },
+    cyc:      { all: 'cyclist fatalities', child: 'child cyclist fatalities' },
   };
   function buildTollLabel() {
-    if (activeFilters.size === 0) return 'cumulative fatalities';
-    const parts = VALID_FILTER_KEYS.filter(k => activeFilters.has(k)).map(k => FILTER_PHRASES[k]);
-    return `cumulative ${parts.join(' ')} fatalities`;
+    const crashParts = VALID_CRASH_FILTERS.filter(k => crashFilters.has(k)).map(k => CRASH_PHRASES[k]);
+    const noun = VICTIM_NOUNS[victim][age];
+    return `cumulative ${crashParts.length ? crashParts.join(' ') + ' ' : ''}${noun}`;
   }
   function updateToll() {
     const i = indexAtTime(currentT);
-    const n = i < 0 ? 0 : prefixSums.f[i];
+    const n = i < 0 ? 0 : prefixSums.sel[i];
     document.getElementById('toll-num').textContent = n.toLocaleString();
     document.getElementById('toll-label').textContent = buildTollLabel();
     const dt = new Date(currentT * 1000).toISOString().slice(0, 10);
     document.getElementById('toll-since').textContent = `since 2000-01-01 → ${dt}`;
     // Stat panel — visible only when augmentation expanded (CSS-gated).
+    // 3 rows × 2 columns: row=victim type, col=all-ages vs children-only.
     const bd = document.getElementById('toll-breakdown');
     if (i < 0) { bd.textContent = ''; return; }
     const fmt = v => v.toLocaleString();
     bd.innerHTML =
-      `pedestrians: <b>${fmt(prefixSums.ped[i])}</b><br>` +
-      `cyclists: <b>${fmt(prefixSums.cyc[i])}</b><br>` +
-      `children (&lt;18): <b>${fmt(prefixSums.child[i])}</b>`;
+      `<table style="margin-left:auto;border-collapse:collapse">` +
+      `<tr><td></td><th style="font-weight:500;padding-left:10px;text-align:right">all</th><th style="font-weight:500;padding-left:10px;text-align:right">child &lt;18</th></tr>` +
+      `<tr><td>occupants</td><td style="padding-left:10px;text-align:right"><b>${fmt(prefixSums.occ[i])}</b></td><td style="padding-left:10px;text-align:right"><b>${fmt(prefixSums.occ_c[i])}</b></td></tr>` +
+      `<tr><td>pedestrians</td><td style="padding-left:10px;text-align:right"><b>${fmt(prefixSums.ped[i])}</b></td><td style="padding-left:10px;text-align:right"><b>${fmt(prefixSums.ped_c[i])}</b></td></tr>` +
+      `<tr><td>cyclists</td><td style="padding-left:10px;text-align:right"><b>${fmt(prefixSums.cyc[i])}</b></td><td style="padding-left:10px;text-align:right"><b>${fmt(prefixSums.cyc_c[i])}</b></td></tr>` +
+      `</table>`;
   }
   rebuildPrefix();
 
@@ -5077,30 +5115,56 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
     });
   });
   applyModeVisibility();
+  // ------ Crash-attribute filter (alcohol/night), AND-combinable, "all" clears the set
   function syncFilterPills() {
     document.querySelectorAll('#filter-pills .pill').forEach(p => {
       const f = p.dataset.filter;
-      const on = (f === 'all') ? activeFilters.size === 0 : activeFilters.has(f);
+      const on = (f === 'all') ? crashFilters.size === 0 : crashFilters.has(f);
       p.classList.toggle('active', on);
+    });
+  }
+  function syncRadioPills(containerId, attr, current) {
+    document.querySelectorAll(`#${containerId} .pill`).forEach(p => {
+      p.classList.toggle('active', p.dataset[attr] === current);
     });
   }
   document.querySelectorAll('#filter-pills .pill').forEach(p => {
     p.addEventListener('click', () => {
       const f = p.dataset.filter;
-      if (f === 'all') {
-        activeFilters.clear();
-      } else if (activeFilters.has(f)) {
-        activeFilters.delete(f);
-      } else {
-        activeFilters.add(f);
-      }
+      if (f === 'all') crashFilters.clear();
+      else if (crashFilters.has(f)) crashFilters.delete(f);
+      else crashFilters.add(f);
       syncFilterPills();
-      link.set('filter', activeFilters.size === 0 ? '' : [...activeFilters].join(','));
-      rebuildPrefix();        // filter changed -> recompute cumulative
+      link.set('filter', crashFilters.size === 0 ? '' : [...crashFilters].join(','));
+      rebuildPrefix();
       refresh();
     });
   });
   syncFilterPills();
+
+  // ------ Victim radio (all/occupant/ped/cyc)
+  document.querySelectorAll('#victim-pills .pill').forEach(p => {
+    p.addEventListener('click', () => {
+      victim = p.dataset.victim;
+      syncRadioPills('victim-pills', 'victim', victim);
+      link.set('victim', victim === 'all' ? '' : victim);
+      rebuildPrefix();
+      refresh();
+    });
+  });
+  syncRadioPills('victim-pills', 'victim', victim);
+
+  // ------ Age radio (all/child)
+  document.querySelectorAll('#age-pills .pill').forEach(p => {
+    p.addEventListener('click', () => {
+      age = p.dataset.age;
+      syncRadioPills('age-pills', 'age', age);
+      link.set('age', age === 'all' ? '' : age);
+      rebuildPrefix();
+      refresh();
+    });
+  });
+  syncRadioPills('age-pills', 'age', age);
 
   function buildLegend() {
     const el = document.getElementById('legend');
