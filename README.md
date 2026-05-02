@@ -11,13 +11,15 @@ Self-contained interactive visualisation of every fatal vehicle crash in the Uni
 
 ## Filters
 
-Three filters that combine with AND semantics:
+The filter system has three independent dimensions:
 
-- **alcohol** — at least one driver coded as alcohol-impaired
-- **multi-fatal** — crashes with two or more fatalities
-- **night** — light condition coded as dark or dark-but-lighted
+- **crash** (combinable, AND semantics): `alcohol` (at least one alcohol-impaired driver) · `night` (dark or dark-but-lighted)
+- **victim** (radio): `all` · `occupants` (drivers + passengers) · `pedestrians` · `cyclists`
+- **age** (radio): `all ages` · `children (<18)`
 
-A live cumulative-fatality counter updates as the scrubber advances and re-labels itself to reflect the active filter combination.
+The victim and age dimensions sit behind a *breakdown by victim type* toggle, hidden by default — sensitive content (children-killed counts) stays out of view until the user opts in.
+
+A cumulative-fatality counter updates as the scrubber advances and re-labels itself to reflect the active selection: e.g. *cumulative alcohol-related night child cyclist fatalities*. The count is the actual cell selected (e.g. for `victim=pedestrian + age=child`, the counter shows child pedestrian fatalities — not "total deaths in any crash that involved a child pedestrian"). Six cross-tab cells (3 victim types × 2 age cuts) are also visible inside the toll body when augmentation is expanded.
 
 ## Data sources
 
