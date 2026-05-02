@@ -4840,6 +4840,33 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
     augBtn.textContent = '▾ breakdown by victim type';
   }
 
+  // Initialise the basemap immediately so tiles load in parallel with the JSON fetch.
+  // Without this, the user stares at a blank map area for the duration of the
+  // fars.json download (~30 MB → 3-15s depending on connection).
+  const STYLES = {
+    light: 'https://tiles.openfreemap.org/styles/positron',
+    dark: 'https://tiles.openfreemap.org/styles/dark',
+  };
+  const initialTheme = document.documentElement.getAttribute('data-theme') || 'light';
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: STYLES[initialTheme] || STYLES.light,
+    center: [-96, 39],
+    zoom: 3.4,
+    minZoom: 2,
+    maxZoom: 12,
+    attributionControl: false,
+  });
+  const obs = new MutationObserver(() => {
+    map.setStyle(STYLES[document.documentElement.getAttribute('data-theme')] || STYLES.dark);
+  });
+  obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // Loading state so the user knows the data is on its way (the JSON is ~30 MB).
+  document.getElementById('toll-num').textContent = '…';
+  document.getElementById('toll-label').textContent = 'loading data';
+  document.getElementById('visible-count').textContent = 'loading 821k crashes…';
+
   const resp = await fetch('fars.json');
   const payload = await resp.json();
   // Payload shape: [t, lon, lat, fatals, alc, light, ped, cyc, child].
@@ -4937,27 +4964,8 @@ fragColor.g = outTexture.r / max(1.0, outTexture.a);
   }
   rebuildPrefix();
 
-  const STYLES = {
-    light: 'https://tiles.openfreemap.org/styles/positron',
-    dark: 'https://tiles.openfreemap.org/styles/dark',
-  };
-  // Fit US bounds. Pick the basemap that matches the live theme so a hard
-  // refresh doesn't briefly show the wrong tiles before the observer fires.
-  const initialTheme = document.documentElement.getAttribute('data-theme') || 'light';
-  const map = new maplibregl.Map({
-    container: 'map',
-    style: STYLES[initialTheme] || STYLES.light,
-    center: [-96, 39],
-    zoom: 3.4,
-    minZoom: 2,
-    maxZoom: 12,
-    attributionControl: false,
-  });
-  const obs = new MutationObserver(() => {
-    map.setStyle(STYLES[document.documentElement.getAttribute('data-theme')] || STYLES.dark);
-  });
-  obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-
+  // Map was initialised at startup; this just waits for the basemap to be ready
+  // (almost certainly already true by the time the JSON has finished parsing).
   await new Promise(resolve => {
     if (map.loaded()) resolve();
     else map.once('load', resolve);
