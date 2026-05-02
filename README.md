@@ -1,6 +1,6 @@
-# Fatal Crashes — US Time-Replay Map
+# US Vehicle Crashes — Time-Replay Map
 
-Live: https://whitehatnetizen.github.io/fatal-crashes/
+Live: https://whitehatnetizen.github.io/US-vehicle-crashes/
 
 Self-contained interactive visualisation of every fatal vehicle crash in the United States from 2000 to 2024 — about 820,000 events — drawn from the NHTSA **Fatality Analysis Reporting System (FARS)** bulk releases.
 
